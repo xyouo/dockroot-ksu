@@ -249,4 +249,6 @@ main() {
   esac
 }
 
-main "$@"
+if [ "${DRCTL_SOURCE_ONLY:-0}" != 1 ]; then
+  main "$@"
+fi

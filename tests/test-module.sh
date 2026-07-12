@@ -27,3 +27,4 @@ bash -n module/service.sh
 bash -n module/bin/drctl
 bash -n module/system/bin/drctl
 bash -n scripts/package.sh
+bash tests/test-drctl.sh
