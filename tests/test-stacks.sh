@@ -33,6 +33,7 @@ run_dockroot() { { printf 'run_dockroot'; printf ' <%s>' "$@"; printf '\n'; } >>
 pull_image() { printf 'pull_image <%s> <%s>\n' "$1" "$2" >> "$calls"; }
 autostart_add() { printf '%s\n' "$1" >> "$AUTOSTART_FILE"; }
 autostart_remove() { :; }
+require_runtime() { :; }
 
 apply_stack openlist
 grep -F 'run_dockroot <run> <--renew> <-v>' "$calls"
@@ -86,6 +87,7 @@ run_dockroot() {
 }
 container_pids() { [ "$running" = 1 ] && echo 1234 || true; }
 port_is_listening() { [ "$running" = 1 ]; }
+port_listener() { [ "$running" = 1 ] && echo listener || true; }
 volume_is_mounted() { [ "$running" = 1 ]; }
 health_url_ok() { [ "$running" = 1 ]; }
 sleep() { :; }

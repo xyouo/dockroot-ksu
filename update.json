@@ -1,0 +1,6 @@
+{
+  "version": "v0.3.0",
+  "versionCode": 300,
+  "zipUrl": "https://github.com/xyouo/dockroot-ksu/releases/download/v0.3.0/dockroot-ksu-v0.3.0.zip",
+  "changelog": "统一可靠生命周期：停止等待、端口冲突检查、持久化卷验证、HTTP 健康检查、状态命令、日志轮转和开机自启验证。"
+}

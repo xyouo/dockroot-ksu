@@ -10,7 +10,7 @@ on:
       version:
         description: 模块版本（不含 v）
         required: false
-        default: 0.1.0
+        default: 0.3.0
 
 permissions:
   contents: read
@@ -28,7 +28,7 @@ jobs:
         run: |
           shellcheck -s sh module/customize.sh module/service.sh module/uninstall.sh
           shellcheck -s sh module/bin/drctl module/system/bin/drctl
-          shellcheck -s bash scripts/package.sh tests/test-module.sh
+          shellcheck -s bash scripts/package.sh tests/*.sh
 
       - name: 运行测试
         run: bash tests/test-module.sh

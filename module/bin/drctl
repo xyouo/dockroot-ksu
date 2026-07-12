@@ -36,6 +36,9 @@ load_config() {
   BOOT_WAIT=120
   DATA_ROOT="$STATE_DIR/data"
   DNS_SERVERS='223.5.5.5 1.1.1.1'
+  STOP_TIMEOUT=15
+  START_TIMEOUT=30
+  MAX_LOG_SIZE_KB=1024
   if [ -r "$CONFIG_FILE" ]; then
     # 仅接受已知键，避免直接执行配置文件内容。
     while IFS='=' read -r key value; do
@@ -44,6 +47,9 @@ load_config() {
         BOOT_WAIT) case "$value" in ''|*[!0-9]*) ;; *) BOOT_WAIT=$value;; esac ;;
         DATA_ROOT) case "$value" in /*) DATA_ROOT=$value;; esac ;;
         DNS_SERVERS) DNS_SERVERS=$value ;;
+        STOP_TIMEOUT) case "$value" in ''|*[!0-9]*) ;; *) STOP_TIMEOUT=$value;; esac ;;
+        START_TIMEOUT) case "$value" in ''|*[!0-9]*) ;; *) START_TIMEOUT=$value;; esac ;;
+        MAX_LOG_SIZE_KB) case "$value" in ''|*[!0-9]*) ;; *) MAX_LOG_SIZE_KB=$value;; esac ;;
       esac
     done < "$CONFIG_FILE"
   fi
@@ -166,11 +172,15 @@ sync_dockroot_config() {
   mkdir -p "$DATA_ROOT" || return 1
   : > "$DATA_ROOT/.dockroot-managed" || return 1
   config="$RUNTIME_DIR/dockroot.json"
-  if [ ! -f "$config" ]; then
-    escaped="$(printf '%s' "$DATA_ROOT" | sed 's/[\\"]/\\&/g')"
-    printf '{\n  "registry-mirrors": [],\n  "data-root": "%s",\n  "useKspeeder": false\n}\n' "$escaped" > "$config"
-    chmod 0600 "$config"
+  temp="$config.tmp.$$"
+  escaped="$(printf '%s' "$DATA_ROOT" | sed 's/[\\"]/\\&/g')"
+  printf '{\n  "registry-mirrors": [],\n  "data-root": "%s",\n  "useKspeeder": false\n}\n' "$escaped" > "$temp" || return 1
+  if [ ! -f "$config" ] || ! cmp -s "$temp" "$config" 2>/dev/null; then
+    mv -f "$temp" "$config"
+  else
+    rm -f "$temp"
   fi
+  chmod 0600 "$config"
 }
 
 require_runtime() {
@@ -222,6 +232,53 @@ stack_file() {
   printf '%s/%s.conf\n' "$STACK_DIR" "$1"
 }
 
+stack_values() {
+  name=$1
+  wanted=$2
+  file="$(stack_file "$name")"
+  [ -r "$file" ] || return 1
+  awk -F= -v wanted="$wanted" '
+    $1 == wanted { print substr($0, length($1) + 2) }
+  ' "$file"
+}
+
+stack_env_value() {
+  name=$1
+  wanted=$2
+  stack_values "$name" ENV | awk -F= -v wanted="$wanted" '
+    $1 == wanted { print substr($0, length($1) + 2); exit }
+  '
+}
+
+append_stack_line() {
+  file=$1
+  line=$2
+  grep -Fx "$line" "$file" >/dev/null 2>&1 || printf '%s\n' "$line" >> "$file"
+}
+
+migrate_stack() {
+  name=$1
+  file="$(stack_file "$name")"
+  case "$name" in
+    openlist)
+      append_stack_line "$file" 'CHECK_PORT=5244'
+      append_stack_line "$file" 'HEALTH_URL=http://127.0.0.1:5244/'
+      ;;
+    qinglong)
+      ql_port="$(stack_env_value "$name" QlPort)"
+      ql_grpc_port="$(stack_env_value "$name" QlGrpcPort)"
+      ql_port=${ql_port:-5700}
+      if [ -z "$ql_grpc_port" ]; then
+        ql_grpc_port=5501
+        append_stack_line "$file" "ENV=QlGrpcPort=$ql_grpc_port"
+      fi
+      append_stack_line "$file" "CHECK_PORT=$ql_port"
+      append_stack_line "$file" "CHECK_PORT=$ql_grpc_port"
+      append_stack_line "$file" "HEALTH_URL=http://127.0.0.1:$ql_port/api/health"
+      ;;
+  esac
+}
+
 apply_stack() {
   name=${1:-}
   valid_name "$name" || { err '请提供有效配置名'; return 1; }
@@ -229,6 +286,7 @@ apply_stack() {
   load_config
   file="$(stack_file "$name")"
   [ -r "$file" ] || { err "配置不存在：$file"; return 1; }
+  migrate_stack "$name"
 
   stack_image=
   stack_autostart=0
@@ -259,6 +317,19 @@ apply_stack() {
         ;;
       HOSTNAME) [ -n "$value" ] && set -- "$@" --hostname "$value" ;;
       WORKDIR) case "$value" in /*) set -- "$@" -w "$value" ;; *) err 'WORKDIR 必须是绝对路径'; return 1 ;; esac ;;
+      CHECK_PORT)
+        case "$value" in ''|*[!0-9]*) err "CHECK_PORT 必须是数字：$value"; return 1 ;; esac
+        if [ "$value" -lt 1 ] || [ "$value" -gt 65535 ]; then
+          err "CHECK_PORT 必须在 1-65535 之间：$value"
+          return 1
+        fi
+        ;;
+      HEALTH_URL)
+        case "$value" in
+          http://127.0.0.1:*|http://localhost:*) ;;
+          *) err "HEALTH_URL 仅允许本机 HTTP 地址：$value"; return 1 ;;
+        esac
+        ;;
       *) err "不支持的配置项：$key"; return 1 ;;
     esac
   done < "$file"
@@ -284,24 +355,190 @@ apply_stack() {
   msg "配置已应用：$file"
 }
 
-up_stack() {
-  name=${1:-}
-  apply_stack "$name" || return 1
-  run_dockroot stop "$name" >/dev/null 2>&1 || true
-  run_dockroot run -d "$name"
-  msg "容器已启动：$name"
+container_pids() {
+  name=$1
+  run_dockroot ps "$name" 2>/dev/null | tr ' ' '\n' | sed -n '/^[0-9][0-9]*$/p'
 }
 
-down_stack() {
+container_is_running() {
+  [ -n "$(container_pids "$1")" ]
+}
+
+port_listener() {
+  port=$1
+  ss -lntp 2>/dev/null | awk -v suffix=":$port" '$4 ~ suffix "$" { print; exit }'
+}
+
+port_is_listening() {
+  [ -n "$(port_listener "$1")" ]
+}
+
+volume_is_mounted() {
+  name=$1
+  target=$2
+  for pid in $(container_pids "$name"); do
+    [ -r "/proc/$pid/mountinfo" ] || continue
+    if awk -v target="$target" '$5 == target { found=1 } END { exit !found }' "/proc/$pid/mountinfo"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+health_url_ok() {
+  curl -fsS --max-time 3 "$1" >/dev/null 2>&1
+}
+
+rotate_log() {
+  file=$1
+  load_config
+  [ -f "$file" ] || return 0
+  size="$(wc -c < "$file" 2>/dev/null)"
+  case "$size" in ''|*[!0-9]*) return 0 ;; esac
+  limit=$((MAX_LOG_SIZE_KB * 1024))
+  [ "$size" -le "$limit" ] && return 0
+  rm -f "$file.1"
+  mv -f "$file" "$file.1"
+}
+
+stop_stack() {
   name=${1:-}
   valid_name "$name" || { err '请提供有效配置名'; return 1; }
   require_runtime || return 1
-  run_dockroot stop "$name"
+  if ! container_is_running "$name"; then
+    return 0
+  fi
+  run_dockroot stop "$name" >/dev/null 2>&1 || true
+  waited=0
+  timeout=${STOP_TIMEOUT:-15}
+  while container_is_running "$name" && [ "$waited" -lt "$timeout" ]; do
+    sleep 1
+    waited=$((waited + 1))
+  done
+  if container_is_running "$name"; then
+    err "容器停止超时，旧进程仍存在：$name ($(container_pids "$name" | tr '\n' ' '))"
+    return 1
+  fi
+}
+
+check_stack_ports_available() {
+  name=$1
+  for port in $(stack_values "$name" CHECK_PORT); do
+    listener="$(port_listener "$port")"
+    if [ -n "$listener" ]; then
+      err "端口 $port 已被占用：$listener"
+      return 1
+    fi
+  done
+}
+
+verify_stack_running() {
+  name=$1
+  waited=0
+  timeout=${START_TIMEOUT:-30}
+  while [ "$waited" -lt "$timeout" ]; do
+    healthy=1
+    container_is_running "$name" || healthy=0
+    for volume in $(stack_values "$name" VOLUME); do
+      remainder=${volume#*:}
+      target=${remainder%%:*}
+      volume_is_mounted "$name" "$target" || healthy=0
+    done
+    for port in $(stack_values "$name" CHECK_PORT); do
+      port_is_listening "$port" || healthy=0
+    done
+    for url in $(stack_values "$name" HEALTH_URL); do
+      health_url_ok "$url" || healthy=0
+    done
+    [ "$healthy" = 1 ] && return 0
+    sleep 1
+    waited=$((waited + 1))
+  done
+  return 1
+}
+
+start_stack() {
+  name=${1:-}
+  valid_name "$name" || { err '请提供有效配置名'; return 1; }
+  require_runtime || return 1
+  stop_stack "$name" || return 1
+  check_stack_ports_available "$name" || return 1
+  rotate_log "$DATA_ROOT/$name/ruri.log"
+  if ! run_dockroot run -d "$name"; then
+    err "容器启动命令失败：$name"
+    return 1
+  fi
+  if ! verify_stack_running "$name"; then
+    err "容器未在规定时间内通过进程、挂载、端口或 HTTP 健康检查：$name"
+    stop_stack "$name" >/dev/null 2>&1 || true
+    return 1
+  fi
+  msg "容器已启动并通过健康检查：$name"
+}
+
+up_stack() {
+  name=${1:-}
+  stop_stack "$name" || return 1
+  apply_stack "$name" || return 1
+  start_stack "$name"
+}
+
+down_stack() {
+  stop_stack "${1:-}"
+}
+
+status_stack() {
+  name=${1:-}
+  valid_name "$name" || { err '请提供有效配置名'; return 1; }
+  file="$(stack_file "$name")"
+  [ -r "$file" ] || { err "配置不存在：$file"; return 1; }
+  migrate_stack "$name"
+  pids="$(container_pids "$name" | tr '\n' ' ')"
+  printf 'name=%s\n' "$name"
+  printf 'config=%s\n' "$file"
+  printf 'image=%s\n' "$(stack_values "$name" IMAGE | head -n 1)"
+  printf 'autostart=%s\n' "$(stack_values "$name" AUTOSTART | head -n 1)"
+  if [ -n "$pids" ]; then
+    printf 'running=yes\n'
+    printf 'pids=%s\n' "$pids"
+  else
+    printf 'running=no\n'
+    return 1
+  fi
+  ok=1
+  for volume in $(stack_values "$name" VOLUME); do
+    remainder=${volume#*:}
+    target=${remainder%%:*}
+    if volume_is_mounted "$name" "$target"; then
+      printf 'volume[%s]=mounted\n' "$target"
+    else
+      printf 'volume[%s]=missing\n' "$target"
+      ok=0
+    fi
+  done
+  for port in $(stack_values "$name" CHECK_PORT); do
+    if port_is_listening "$port"; then
+      printf 'port[%s]=listening\n' "$port"
+    else
+      printf 'port[%s]=closed\n' "$port"
+      ok=0
+    fi
+  done
+  for url in $(stack_values "$name" HEALTH_URL); do
+    if health_url_ok "$url"; then
+      printf 'health[%s]=ok\n' "$url"
+    else
+      printf 'health[%s]=failed\n' "$url"
+      ok=0
+    fi
+  done
+  [ "$ok" = 1 ]
 }
 
 create_stack() {
   template=${1:-}
   option=${2:-}
+  option2=${3:-}
   ensure_state || return 1
   case "$template" in
     openlist)
@@ -312,9 +549,15 @@ create_stack() {
       target="$STACK_DIR/qinglong.conf"
       source="$MODDIR/examples/qinglong.conf"
       port=${option:-5700}
+      grpc_port=${option2:-5501}
       case "$port" in ''|*[!0-9]*) err '青龙端口必须是 1-65535 的数字'; return 1 ;; esac
+      case "$grpc_port" in ''|*[!0-9]*) err '青龙 gRPC 端口必须是 1-65535 的数字'; return 1 ;; esac
       if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
         err '青龙端口必须在 1-65535 之间'
+        return 1
+      fi
+      if [ "$grpc_port" -lt 1 ] || [ "$grpc_port" -gt 65535 ] || [ "$grpc_port" = "$port" ]; then
+        err '青龙 gRPC 端口必须在 1-65535 之间且不能与 HTTP 端口相同'
         return 1
       fi
       ;;
@@ -324,6 +567,7 @@ create_stack() {
   cp "$source" "$target" || return 1
   if [ "$template" = qinglong ]; then
     sed -i "s|__QL_PORT__|$port|g" "$target"
+    sed -i "s|__QL_GRPC_PORT__|$grpc_port|g" "$target"
   fi
   chmod 0600 "$target"
   msg "已创建配置：$target"
@@ -429,11 +673,12 @@ boot() {
     waited=$((waited + 2))
   done
   require_runtime || exit 0
+  rotate_log "$LOG_DIR/service.log"
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     valid_name "$name" || continue
     msg "正在自启容器：$name" >> "$LOG_DIR/service.log"
-    run_dockroot run -d "$name" >> "$LOG_DIR/service.log" 2>&1 || \
+    up_stack "$name" >> "$LOG_DIR/service.log" 2>&1 || \
       msg "容器自启失败：$name" >> "$LOG_DIR/service.log"
   done < "$AUTOSTART_FILE"
 }
@@ -481,12 +726,13 @@ DockRoot 容器模块（实验性）
   autostart remove <容器名>        移除开机自启
   autostart list                  查看开机自启列表
   stack create openlist           创建标准完整版 OpenList 配置模板
-  stack create qinglong [端口]    创建青龙配置模板，默认端口 5700
+  stack create qinglong [HTTP] [gRPC]  创建青龙模板，默认 5700/5501
   stack list                      查看声明式配置
   apply <配置名>                  应用固定配置但不启动
   up <配置名>                     应用配置并后台启动
   down <配置名>                   停止配置对应的容器
   restart <配置名>                重新应用配置并启动
+  status <配置名>                 查看进程、卷、端口和 HTTP 健康状态
   cleanup [--yes]                 预览/清理失败拉取残留
 
 注意：DockRoot 只支持 host 网络，不支持 -p 端口映射。
@@ -504,13 +750,14 @@ main() {
     apply) apply_stack "${1:-}" ;;
     up) up_stack "${1:-}" ;;
     down) down_stack "${1:-}" ;;
-    restart) down_stack "${1:-}" >/dev/null 2>&1 || true; up_stack "${1:-}" ;;
+    restart) up_stack "${1:-}" ;;
+    status) status_stack "${1:-}" ;;
     cleanup) cleanup_state "${1:-preview}" ;;
     stack)
       sub=${1:-list}
       [ $# -eq 0 ] || shift
       case "$sub" in
-        create) create_stack "${1:-}" "${2:-}" ;;
+        create) create_stack "${1:-}" "${2:-}" "${3:-}" ;;
         list) list_stacks ;;
         path) ensure_state; printf '%s\n' "$STACK_DIR" ;;
         *) err '可用子命令：create、list、path'; return 1 ;;
