@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# 测试会动态覆盖已 source 脚本中的适配函数。
+# shellcheck disable=SC1091,SC2034,SC2317
 
 set -euo pipefail
 
@@ -85,9 +87,9 @@ run_dockroot() {
   esac
   return 0
 }
-container_pids() { [ "$running" = 1 ] && echo 1234 || true; }
+container_pids() { if [ "$running" = 1 ]; then echo 1234; fi; }
 port_is_listening() { [ "$running" = 1 ]; }
-port_listener() { [ "$running" = 1 ] && echo listener || true; }
+port_listener() { if [ "$running" = 1 ]; then echo listener; fi; }
 volume_is_mounted() { [ "$running" = 1 ]; }
 health_url_ok() { [ "$running" = 1 ]; }
 sleep() { :; }
