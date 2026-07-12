@@ -249,7 +249,9 @@ apply_stack() {
         case "$source_path" in /*) ;; *) err "卷来源必须是绝对路径：$value"; return 1 ;; esac
         case "$target_path" in /*) ;; *) err "卷目标必须是绝对路径：$value"; return 1 ;; esac
         mkdir -p "$source_path" || return 1
-        chmod 0775 "$source_path" 2>/dev/null || true
+        # 部分镜像（如 OpenList 4.1+）会在容器内切换到非 root UID。
+        # 上级 /data/adb/dockroot 仍为 0700，放宽挂载点本身不会暴露给普通 Android 应用。
+        chmod 0777 "$source_path" 2>/dev/null || true
         set -- "$@" -v "$value"
         ;;
       ENV)

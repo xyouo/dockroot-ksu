@@ -107,6 +107,8 @@ ENV=UMASK=022
 
 这里使用 OpenList 官方 `latest-aio` 镜像，包含 FFmpeg 和 aria2。OpenList 使用 host 网络，默认面板地址为 `http://127.0.0.1:5244`。业务配置和数据库保存在 `/data/adb/dockroot/volumes/openlist`，重新拉取镜像不会删除它们。
 
+OpenList 4.1 之后可能以容器内 UID 1001 运行。模块会放宽具体卷目录的权限以允许该用户写入；其上级 `/data/adb/dockroot` 仍保持仅 root 可访问。
+
 ## 数据与配置
 
 - 配置：`/data/adb/dockroot/config.env`
