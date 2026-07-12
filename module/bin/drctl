@@ -301,6 +301,7 @@ apply_stack() {
         case "$value" in 0|1) stack_autostart=$value ;; *) err 'AUTOSTART 只能是 0 或 1'; return 1 ;; esac
         ;;
       VOLUME)
+        case "$value" in *[[:space:]]*) err "VOLUME 暂不支持包含空格的路径：$value"; return 1 ;; esac
         source_path=${value%%:*}
         remainder=${value#*:}
         target_path=${remainder%%:*}
@@ -386,7 +387,16 @@ volume_is_mounted() {
 }
 
 health_url_ok() {
-  curl -fsS --max-time 3 "$1" >/dev/null 2>&1
+  url=$1
+  if have_cmd curl; then
+    curl -fsS --max-time 3 "$url" >/dev/null 2>&1
+  elif have_cmd wget; then
+    wget -q -T 3 -O /dev/null "$url" >/dev/null 2>&1
+  elif have_cmd busybox; then
+    busybox wget -q -T 3 -O /dev/null "$url" >/dev/null 2>&1
+  else
+    return 1
+  fi
 }
 
 rotate_log() {

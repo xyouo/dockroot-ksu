@@ -70,6 +70,8 @@ su -c '/data/adb/modules/dockroot_ksu/bin/drctl autostart list'
 - `ENV=KEY=VALUE`：可以重复填写。
 - `HOSTNAME=`：可选容器主机名。
 - `WORKDIR=`：可选容器工作目录，必须是绝对路径。
+- `CHECK_PORT=`：启动前检查冲突、启动后确认监听，可以重复填写。
+- `HEALTH_URL=`：启动后的本机 HTTP 健康检查地址。
 
 DockRoot 只有 host 网络，因此不支持 Compose 的 `ports`、独立网络、`depends_on` 等字段。镜像监听的端口会直接占用手机端口。
 
@@ -82,6 +84,7 @@ drctl apply openlist
 drctl up openlist
 drctl down openlist
 drctl restart openlist
+drctl status openlist
 drctl logs openlist 100
 ```
 
@@ -103,6 +106,8 @@ IMAGE=openlistteam/openlist:latest
 AUTOSTART=1
 VOLUME=/data/adb/dockroot/volumes/openlist:/opt/openlist/data
 ENV=UMASK=022
+CHECK_PORT=5244
+HEALTH_URL=http://127.0.0.1:5244/
 ```
 
 这里使用 OpenList 官方标准完整版 `latest`，不是 `lite` 精简版。OpenList 使用 host 网络，默认面板地址为 `http://127.0.0.1:5244`。业务配置和数据库保存在 `/data/adb/dockroot/volumes/openlist`，重新拉取镜像不会删除它们。
@@ -128,17 +133,50 @@ AUTOSTART=1
 HOSTNAME=qinglong
 VOLUME=/data/adb/dockroot/volumes/qinglong:/ql/data
 ENV=QlPort=5900
+ENV=QlGrpcPort=5501
 ENV=QlBaseUrl=/
 ENV=TZ=Asia/Shanghai
+CHECK_PORT=5900
+CHECK_PORT=5501
+HEALTH_URL=http://127.0.0.1:5900/api/health
 ```
 
-青龙使用 host 网络，因此面板地址是 `http://127.0.0.1:5900`。请确保该端口没有被其他青龙模块或面板占用。青龙的配置、任务、日志和依赖保存在 `/data/adb/dockroot/volumes/qinglong`，覆盖升级模块或重新拉取镜像不会删除。
+青龙使用 host 网络，因此面板地址是 `http://127.0.0.1:5900`，gRPC 使用 5501。模块会在启动前检查两个端口冲突，并在启动后验证 HTTP、gRPC 和持久化卷。青龙的配置、任务、日志和依赖保存在 `/data/adb/dockroot/volumes/qinglong`，覆盖升级模块或重新拉取镜像不会删除。
 
 如果创建模板时省略端口，将使用青龙默认的 5700：
 
 ```sh
 su -c 'drctl stack create qinglong'
 ```
+
+也可以同时指定 HTTP 和 gRPC 端口：
+
+```sh
+su -c 'drctl stack create qinglong 5900 5501'
+```
+
+## 可靠启动与状态检查
+
+`up`、`restart` 和开机自启共用同一套生命周期：
+
+1. 停止旧实例并等待 PID 真正退出。
+2. 应用声明式配置。
+3. 检查所有 `CHECK_PORT` 是否被其他进程占用。
+4. 启动容器。
+5. 验证进程、每个持久化卷、端口和 `HEALTH_URL`。
+
+任何一步失败都会返回非零退出码并说明原因，不再把“命令已发出”当成“容器启动成功”。诊断示例：
+
+```sh
+su -c 'drctl status openlist'
+su -c 'drctl status qinglong'
+```
+
+模块自身日志与容器 `ruri.log` 默认超过 1 MiB 后保留为 `.1` 并重新记录。阈值可在 `/data/adb/dockroot/config.env` 中通过 `MAX_LOG_SIZE_KB` 修改。
+
+## 模块更新
+
+模块提供标准 `update.json`，支持 KernelSU/APatch/Magisk 管理器的常规更新检测。更新 ZIP 只包含模块本身；运行环境、镜像、stack 配置和业务卷继续保存在 `/data/adb/dockroot`，覆盖升级不会删除。
 
 ## 数据与配置
 
