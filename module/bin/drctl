@@ -264,12 +264,17 @@ apply_stack() {
   done < "$file"
 
   [ -n "$stack_image" ] || { err "配置缺少 IMAGE：$file"; return 1; }
+  if [ "$name" = openlist ] && [ "$stack_image" = openlistteam/openlist:latest-aio ]; then
+    stack_image=openlistteam/openlist:latest
+    sed -i 's|^IMAGE=openlistteam/openlist:latest-aio$|IMAGE=openlistteam/openlist:latest|' "$file"
+    msg '已将旧版 OpenList AIO 模板迁移为实际可准确拉取的标准完整版 latest'
+  fi
   if [ ! -d "$DATA_ROOT/$name/rootfs" ]; then
     pull_image "$stack_image" "$name" || return 1
   fi
 
   # 仅更新 ruri.conf；用 true 覆盖本次命令，避免 apply 启动长期服务。
-  set -- "$@" "$name" /bin/sh -c true
+  set -- "$@" "$name" /bin/true
   run_dockroot "$@" || return 1
   if [ "$stack_autostart" = 1 ]; then
     autostart_add "$name" >/dev/null
@@ -300,7 +305,7 @@ create_stack() {
   case "$template" in
     openlist)
       target="$STACK_DIR/openlist.conf"
-      source="$MODDIR/examples/openlist-aio.conf"
+      source="$MODDIR/examples/openlist.conf"
       ;;
     *) err '当前内置模板：openlist'; return 1 ;;
   esac
@@ -364,6 +369,14 @@ pull_image() {
   valid_name "$name" || { err '请提供有效容器名'; return 1; }
   require_runtime || return 1
   normalized="$(normalize_image "$image")"
+  case "$normalized" in
+    *@*) err 'DockRoot 当前不支持按摘要准确拉取镜像'; return 1 ;;
+    *:latest) ;;
+    *)
+      err "DockRoot 上游当前会丢失非 latest 标签，已拒绝可能拉错的镜像：$normalized"
+      return 1
+      ;;
+  esac
   cleanup_incomplete_destination "$name"
   msg "正在从 $normalized 拉取镜像"
   run_dockroot pull "$normalized" "$name"

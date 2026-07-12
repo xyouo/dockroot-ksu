@@ -87,7 +87,7 @@ drctl logs openlist 100
 
 `apply` 只拉取缺失镜像并更新固定配置，不会启动长期服务。`up` 会应用配置后后台启动。修改 `.conf` 后再次执行 `drctl up <容器名>` 即可生效。
 
-### OpenList 完整版示例
+### OpenList 标准完整版示例
 
 创建内置模板：
 
@@ -99,13 +99,15 @@ su -c 'drctl up openlist'
 生成的 `/data/adb/dockroot/stacks/openlist.conf` 内容为：
 
 ```ini
-IMAGE=openlistteam/openlist:latest-aio
+IMAGE=openlistteam/openlist:latest
 AUTOSTART=1
 VOLUME=/data/adb/dockroot/volumes/openlist:/opt/openlist/data
 ENV=UMASK=022
 ```
 
-这里使用 OpenList 官方 `latest-aio` 镜像，包含 FFmpeg 和 aria2。OpenList 使用 host 网络，默认面板地址为 `http://127.0.0.1:5244`。业务配置和数据库保存在 `/data/adb/dockroot/volumes/openlist`，重新拉取镜像不会删除它们。
+这里使用 OpenList 官方标准完整版 `latest`，不是 `lite` 精简版。OpenList 使用 host 网络，默认面板地址为 `http://127.0.0.1:5244`。业务配置和数据库保存在 `/data/adb/dockroot/volumes/openlist`，重新拉取镜像不会删除它们。
+
+DockRoot 当前版本在拉取时会丢失 `latest-aio` 等非 `latest` 标签，因此模块会拒绝静默拉错镜像。v0.2.0 创建的 OpenList 配置会在首次 `apply/up` 时自动迁移为实际已拉取的 `latest`。待上游修复标签处理后，再恢复 AIO 模板支持。
 
 OpenList 4.1 之后可能以容器内 UID 1001 运行。模块会放宽具体卷目录的权限以允许该用户写入；其上级 `/data/adb/dockroot` 仍保持仅 root 可访问。
 
