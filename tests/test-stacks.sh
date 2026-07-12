@@ -24,6 +24,8 @@ IMAGE=openlistteam/openlist:latest
 AUTOSTART=1
 VOLUME=$STATE_DIR/volumes/openlist:/opt/openlist/data
 ENV=UMASK=022
+CHECK_PORT=5244
+HEALTH_URL=http://127.0.0.1:5244/
 EOF
 
 calls="$temp_dir/calls"
@@ -67,3 +69,39 @@ grep -Fx 'IMAGE=whyour/qinglong:latest' "$STACK_DIR/qinglong.conf"
 grep -Fx 'VOLUME=/data/adb/dockroot/volumes/qinglong:/ql/data' "$STACK_DIR/qinglong.conf"
 grep -Fx 'ENV=QlPort=5900' "$STACK_DIR/qinglong.conf"
 grep -Fx 'AUTOSTART=1' "$STACK_DIR/qinglong.conf"
+grep -Fx 'ENV=QlGrpcPort=5501' "$STACK_DIR/qinglong.conf"
+grep -Fx 'CHECK_PORT=5900' "$STACK_DIR/qinglong.conf"
+grep -Fx 'CHECK_PORT=5501' "$STACK_DIR/qinglong.conf"
+grep -Fx 'HEALTH_URL=http://127.0.0.1:5900/api/health' "$STACK_DIR/qinglong.conf"
+
+# 生命周期：必须等待旧进程退出，并验证端口、卷和 HTTP 健康后才成功。
+running=1
+run_failed=0
+run_dockroot() {
+  case "${1:-} ${2:-}" in
+    'stop openlist') running=0 ;;
+    'run -d') [ "$run_failed" = 0 ] || return 1; running=1 ;;
+  esac
+  return 0
+}
+container_pids() { [ "$running" = 1 ] && echo 1234 || true; }
+port_is_listening() { [ "$running" = 1 ]; }
+volume_is_mounted() { [ "$running" = 1 ]; }
+health_url_ok() { [ "$running" = 1 ]; }
+sleep() { :; }
+
+start_stack openlist
+
+run_failed=1
+if start_stack openlist >/dev/null 2>&1; then
+  echo '底层启动失败时 start_stack 不应返回成功' >&2
+  exit 1
+fi
+
+running=1
+run_failed=0
+container_pids() { echo 1234; }
+if stop_stack openlist >/dev/null 2>&1; then
+  echo '旧进程不退出时 stop_stack 不应返回成功' >&2
+  exit 1
+fi
