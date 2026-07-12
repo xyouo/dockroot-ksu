@@ -30,3 +30,4 @@ bash -n module/bin/dockroot-exec
 bash -n module/system/bin/drctl
 bash -n scripts/package.sh
 bash tests/test-drctl.sh
+bash tests/test-stacks.sh
