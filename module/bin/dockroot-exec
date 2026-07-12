@@ -1,0 +1,36 @@
+#!/system/bin/sh
+
+set -u
+
+[ "$(id -u)" = 0 ] || {
+  echo '[DockRoot 模块] 错误：独立 DNS 环境需要 root 权限' >&2
+  exit 1
+}
+
+[ -n "${DR_DNS_ETC:-}" ] && [ -f "$DR_DNS_ETC/resolv.conf" ] || {
+  echo '[DockRoot 模块] 错误：独立 DNS 配置不存在' >&2
+  exit 1
+}
+
+if command -v busybox >/dev/null 2>&1; then
+  run_mount() { busybox mount "$@"; }
+else
+  run_mount() { mount "$@"; }
+fi
+
+# 防止 bind mount 传播回 Android 的全局 mount namespace。
+run_mount --make-rprivate / || {
+  echo '[DockRoot 模块] 错误：无法将挂载传播方式设为 private' >&2
+  exit 1
+}
+
+run_mount --bind "$DR_DNS_ETC" /etc || {
+  echo '[DockRoot 模块] 错误：无法挂载 DockRoot 独立 DNS 环境' >&2
+  exit 1
+}
+
+if [ -n "${DR_CERT_DIR:-}" ]; then
+  export SSL_CERT_DIR="$DR_CERT_DIR"
+fi
+
+exec "$@"

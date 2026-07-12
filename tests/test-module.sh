@@ -7,6 +7,7 @@ required=(
   module/customize.sh
   module/service.sh
   module/bin/drctl
+  module/bin/dockroot-exec
   module/system/bin/drctl
   scripts/package.sh
   README.md
@@ -25,6 +26,7 @@ grep -q '只支持 host 网络' module/bin/drctl
 bash -n module/customize.sh
 bash -n module/service.sh
 bash -n module/bin/drctl
+bash -n module/bin/dockroot-exec
 bash -n module/system/bin/drctl
 bash -n scripts/package.sh
 bash tests/test-drctl.sh

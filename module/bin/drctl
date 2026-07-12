@@ -9,6 +9,7 @@ RUNTIME_DIR="$STATE_DIR/bin"
 LOG_DIR="$STATE_DIR/logs"
 CONFIG_FILE="$STATE_DIR/config.env"
 AUTOSTART_FILE="$STATE_DIR/autostart.list"
+DNS_ETC_DIR="$STATE_DIR/dns-etc"
 DOCKROOT="$RUNTIME_DIR/DockRoot"
 RURI="$RUNTIME_DIR/ruri"
 DOCKROOT_URL=https://fw.koolcenter.com/binary/DockRoot/DockRoot.arm64
@@ -31,6 +32,7 @@ load_config() {
   AUTO_START=1
   BOOT_WAIT=120
   DATA_ROOT="$STATE_DIR/data"
+  DNS_SERVERS='223.5.5.5 1.1.1.1'
   if [ -r "$CONFIG_FILE" ]; then
     # 仅接受已知键，避免直接执行配置文件内容。
     while IFS='=' read -r key value; do
@@ -38,6 +40,7 @@ load_config() {
         AUTO_START) case "$value" in 0|1) AUTO_START=$value;; esac ;;
         BOOT_WAIT) case "$value" in ''|*[!0-9]*) ;; *) BOOT_WAIT=$value;; esac ;;
         DATA_ROOT) case "$value" in /*) DATA_ROOT=$value;; esac ;;
+        DNS_SERVERS) DNS_SERVERS=$value ;;
       esac
     done < "$CONFIG_FILE"
   fi
@@ -99,6 +102,48 @@ runtime_ready() {
   [ -x "$DOCKROOT" ] && [ -x "$RURI" ]
 }
 
+prepare_dns_environment() {
+  load_config
+  mkdir -p "$DNS_ETC_DIR" || return 1
+  : > "$DNS_ETC_DIR/resolv.conf" || return 1
+  for server in $DNS_SERVERS; do
+    case "$server" in
+      *[!0-9a-fA-F.:]*) continue ;;
+    esac
+    printf 'nameserver %s\n' "$server" >> "$DNS_ETC_DIR/resolv.conf"
+  done
+  [ -s "$DNS_ETC_DIR/resolv.conf" ] || {
+    err 'DNS_SERVERS 中没有有效地址'
+    return 1
+  }
+  chmod 0755 "$DNS_ETC_DIR"
+  chmod 0644 "$DNS_ETC_DIR/resolv.conf"
+
+  if [ -d /apex/com.android.conscrypt/cacerts ]; then
+    DOCKROOT_CERT_DIR=/apex/com.android.conscrypt/cacerts
+  elif [ -d /system/etc/security/cacerts ]; then
+    cert_copy="$STATE_DIR/cacerts"
+    if [ ! -d "$cert_copy" ]; then
+      mkdir -p "$cert_copy" || return 1
+      cp -a /system/etc/security/cacerts/. "$cert_copy/" || return 1
+    fi
+    DOCKROOT_CERT_DIR=$cert_copy
+  else
+    DOCKROOT_CERT_DIR=
+  fi
+}
+
+run_dockroot() {
+  prepare_dns_environment || return 1
+  if [ ! -x /system/bin/unshare ]; then
+    err '设备缺少 /system/bin/unshare，无法为 DockRoot 建立独立 DNS 环境'
+    return 1
+  fi
+  DR_DNS_ETC="$DNS_ETC_DIR" \
+  DR_CERT_DIR="$DOCKROOT_CERT_DIR" \
+    /system/bin/unshare -m "$MODDIR/bin/dockroot-exec" "$DOCKROOT" "$@"
+}
+
 install_runtime() {
   ensure_state || return 1
   install_one DockRoot "$DOCKROOT_URL" "$DOCKROOT_SHA256" "$DOCKROOT" || return 1
@@ -120,8 +165,8 @@ sync_dockroot_config() {
 
 require_runtime() {
   if ! runtime_ready; then
-    err "运行环境尚未安装，请先执行：$0 install-runtime"
-    return 1
+    msg '首次使用，正在自动安装运行环境'
+    install_runtime || return 1
   fi
   sync_dockroot_config
 }
@@ -131,6 +176,48 @@ valid_name() {
     ''|*[!a-zA-Z0-9._-]*) return 1 ;;
     *) return 0 ;;
   esac
+}
+
+normalize_image() {
+  image=$1
+  case "$image" in
+    docker://*) image=${image#docker://} ;;
+  esac
+  case "$image" in
+    *:*) ;;
+    *) image="$image:latest" ;;
+  esac
+  case "$image" in
+    */*)
+      registry=${image%%/*}
+      case "$registry" in
+        *.*|localhost|*:* ) printf '%s\n' "$image" ;;
+        *) printf 'docker.io/%s\n' "$image" ;;
+      esac
+      ;;
+    *) printf 'docker.io/library/%s\n' "$image" ;;
+  esac
+}
+
+cleanup_incomplete_destination() {
+  name=$1
+  destination="$DATA_ROOT/$name"
+  if [ -d "$destination" ] && [ ! -d "$destination/rootfs" ]; then
+    msg "正在清理上次拉取失败留下的不完整目录：$name"
+    rm -rf "$destination"
+  fi
+}
+
+pull_image() {
+  image=${1:-}
+  name=${2:-}
+  [ -n "$image" ] || { err '请提供镜像名称'; return 1; }
+  valid_name "$name" || { err '请提供有效容器名'; return 1; }
+  require_runtime || return 1
+  normalized="$(normalize_image "$image")"
+  cleanup_incomplete_destination "$name"
+  msg "正在从 $normalized 拉取镜像"
+  run_dockroot pull "$normalized" "$name"
 }
 
 autostart_add() {
@@ -170,7 +257,7 @@ boot() {
     [ -n "$name" ] || continue
     valid_name "$name" || continue
     msg "正在自启容器：$name" >> "$LOG_DIR/service.log"
-    "$DOCKROOT" run -d "$name" >> "$LOG_DIR/service.log" 2>&1 || \
+    run_dockroot run -d "$name" >> "$LOG_DIR/service.log" 2>&1 || \
       msg "容器自启失败：$name" >> "$LOG_DIR/service.log"
   done < "$AUTOSTART_FILE"
 }
@@ -183,12 +270,19 @@ doctor() {
   printf 'runtime=%s\n' "$(runtime_ready && echo installed || echo missing)"
   printf 'data_root=%s\n' "$DATA_ROOT"
   if [ -e "$DATA_ROOT" ]; then
-    printf 'filesystem=%s\n' "$(df -T "$DATA_ROOT" 2>/dev/null | awk 'NR==2 {print $2}')"
+    filesystem="$(awk -v path="$DATA_ROOT" '
+      $2 == "/" || index(path, $2 "/") == 1 {
+        if (length($2) > best) { best = length($2); type = $3 }
+      }
+      END { print type }
+    ' /proc/mounts 2>/dev/null)"
+    printf 'filesystem=%s\n' "${filesystem:-unknown}"
   else
     printf 'filesystem=missing\n'
   fi
   printf 'autostart=%s\n' "$AUTO_START"
   printf 'boot_completed=%s\n' "$(getprop sys.boot_completed 2>/dev/null)"
+  [ -x /system/bin/unshare ] && echo 'mount_namespace=yes' || echo 'mount_namespace=no'
   [ -e /proc ] && echo 'proc=yes' || echo 'proc=no'
   [ -e /sys ] && echo 'sys=yes' || echo 'sys=no'
   [ -e /dev ] && echo 'dev=yes' || echo 'dev=no'
@@ -223,9 +317,10 @@ main() {
     install-runtime) install_runtime ;;
     doctor) doctor ;;
     boot) boot ;;
-    pull|run|stop|ps|rm|inspect|layers|tags)
+    pull) pull_image "$@" ;;
+    run|stop|ps|rm|inspect|layers|tags)
       require_runtime || return 1
-      "$DOCKROOT" "$command" "$@"
+      run_dockroot "$command" "$@"
       ;;
     logs)
       name=${1:-}

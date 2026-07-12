@@ -12,6 +12,7 @@
 - 查看 ruri 原始运行日志。
 - 配置容器开机自启。
 - 输出架构、SELinux、文件系统和挂载环境诊断。
+- 通过独立 mount namespace 为 DockRoot 提供 DNS，不修改 Android 全局网络配置。
 - 卸载模块时保留容器数据，防止误删。
 
 模块不会在 Release 中重新分发 DockRoot/ruri 二进制。首次安装运行环境时，手机会直接访问第三方上游下载；DockRoot 仓库目前没有明确许可证，请自行判断是否接受。
@@ -21,11 +22,11 @@
 刷入模块并重启手机，然后在 Termux 等终端执行：
 
 ```sh
-su -c '/data/adb/modules/dockroot_ksu/bin/drctl doctor'
-su -c '/data/adb/modules/dockroot_ksu/bin/drctl install-runtime'
-su -c '/data/adb/modules/dockroot_ksu/bin/drctl pull library/alpine:latest alpine'
+su -c '/data/adb/modules/dockroot_ksu/bin/drctl pull alpine:latest alpine'
 su -c '/data/adb/modules/dockroot_ksu/bin/drctl run alpine /bin/ash'
 ```
+
+`pull` 会在本机第一次使用时自动下载并校验运行环境。`doctor` 和 `install-runtime` 仅用于诊断或手动预安装，不是每次安装模块都必须执行。
 
 重启后模块也会把 `drctl` 放入 root 命令路径，因此通常可以简写为 `su -c 'drctl doctor'`。上面的完整路径便于排除 PATH 差异。
 
