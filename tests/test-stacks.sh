@@ -11,8 +11,9 @@ trap 'rm -rf "$temp_dir"' EXIT
 STATE_DIR="$temp_dir/state"
 STACK_DIR="$STATE_DIR/stacks"
 DATA_ROOT="$STATE_DIR/data"
+RUNTIME_DIR="$STATE_DIR/bin"
 AUTOSTART_FILE="$STATE_DIR/autostart.list"
-mkdir -p "$STACK_DIR" "$DATA_ROOT/openlist/rootfs"
+mkdir -p "$STACK_DIR" "$RUNTIME_DIR" "$DATA_ROOT/openlist/rootfs"
 : > "$AUTOSTART_FILE"
 ensure_state() { mkdir -p "$STACK_DIR" "$DATA_ROOT"; }
 load_config() { :; }
@@ -48,3 +49,9 @@ test -d "$DATA_ROOT/incomplete"
 grep -F "$DATA_ROOT/incomplete" "$temp_dir/preview"
 cleanup_state --yes >/dev/null
 test ! -e "$DATA_ROOT/incomplete"
+
+DATA_ROOT=/
+if cleanup_state --yes >/dev/null 2>&1; then
+  echo '危险 DATA_ROOT 不应允许清理' >&2
+  exit 1
+fi

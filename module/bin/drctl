@@ -157,7 +157,14 @@ install_runtime() {
 
 sync_dockroot_config() {
   load_config
+  case "$DATA_ROOT" in
+    /|/data|/data/adb|/system|/vendor|/product|/storage|/sdcard|/mnt)
+      err "DATA_ROOT 不能指向系统级目录：$DATA_ROOT"
+      return 1
+      ;;
+  esac
   mkdir -p "$DATA_ROOT" || return 1
+  : > "$DATA_ROOT/.dockroot-managed" || return 1
   config="$RUNTIME_DIR/dockroot.json"
   if [ ! -f "$config" ]; then
     escaped="$(printf '%s' "$DATA_ROOT" | sed 's/[\\"]/\\&/g')"
@@ -314,7 +321,11 @@ list_stacks() {
 
 cleanup_state() {
   mode=${1:-preview}
-  load_config
+  sync_dockroot_config || return 1
+  [ -f "$DATA_ROOT/.dockroot-managed" ] || {
+    err "拒绝清理未受管目录：$DATA_ROOT"
+    return 1
+  }
   found=0
   for path in "$DATA_ROOT"/*; do
     [ -d "$path" ] || continue

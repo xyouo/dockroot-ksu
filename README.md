@@ -137,6 +137,8 @@ su -c 'drctl cleanup --yes'
 - `/data/adb/dockroot/data` 中没有 `rootfs` 的失败拉取目录，例如之前失败产生的 `alpine2`。
 - `/data/adb/dockroot/bin` 中遗留的 `.download.*` 下载残片。
 
+清理前还会校验 DockRoot 受管标记，并拒绝 `/`、`/data`、`/system` 等系统级 `DATA_ROOT`，避免误配置扩大删除范围。
+
 以下目录仍在使用，不应作为旧版本垃圾删除：
 
 - `/data/adb/dockroot/bin`：DockRoot 和 ruri 运行环境。
