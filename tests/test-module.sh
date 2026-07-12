@@ -23,6 +23,7 @@ grep -q '^id=dockroot_ksu$' module/module.prop
 grep -q 'DOCKROOT_SHA256=' module/bin/drctl
 grep -q 'RURI_SHA256=' module/bin/drctl
 grep -q '只支持 host 网络' module/bin/drctl
+grep -q '^IMAGE=openlistteam/openlist:latest$' module/examples/openlist-aio.conf
 
 bash -n module/customize.sh
 bash -n module/service.sh

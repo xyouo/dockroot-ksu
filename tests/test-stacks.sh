@@ -19,7 +19,7 @@ ensure_state() { mkdir -p "$STACK_DIR" "$DATA_ROOT"; }
 load_config() { :; }
 
 cat > "$STACK_DIR/openlist.conf" <<EOF
-IMAGE=openlistteam/openlist:latest-aio
+IMAGE=openlistteam/openlist:latest
 AUTOSTART=1
 VOLUME=$STATE_DIR/volumes/openlist:/opt/openlist/data
 ENV=UMASK=022
@@ -35,13 +35,17 @@ apply_stack openlist
 grep -F 'run_dockroot <run> <--renew> <-v>' "$calls"
 grep -F "<$STATE_DIR/volumes/openlist:/opt/openlist/data>" "$calls"
 grep -F '<-e> <UMASK=022>' "$calls"
-grep -F '<openlist> </bin/sh> <-c> <true>' "$calls"
+grep -F '<openlist> </bin/true>' "$calls"
+if grep -F '<-c>' "$calls"; then
+  echo 'apply 不应向 DockRoot 传入会被误解析的 -c' >&2
+  exit 1
+fi
 grep -Fx 'openlist' "$AUTOSTART_FILE"
 test -d "$STATE_DIR/volumes/openlist"
 
 rm -rf "$DATA_ROOT/openlist/rootfs"
 apply_stack openlist
-grep -F 'pull_image <openlistteam/openlist:latest-aio> <openlist>' "$calls"
+grep -F 'pull_image <openlistteam/openlist:latest> <openlist>' "$calls"
 
 mkdir -p "$DATA_ROOT/incomplete"
 cleanup_state > "$temp_dir/preview"
