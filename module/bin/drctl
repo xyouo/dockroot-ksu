@@ -272,6 +272,10 @@ migrate_stack() {
         ql_grpc_port=5501
         append_stack_line "$file" "ENV=QlGrpcPort=$ql_grpc_port"
       fi
+      temp="$file.tmp.$$"
+      sed '/^CHECK_PORT=/d; /^HEALTH_URL=/d' "$file" > "$temp" || return 1
+      mv -f "$temp" "$file"
+      chmod 0600 "$file"
       append_stack_line "$file" "CHECK_PORT=$ql_port"
       append_stack_line "$file" "CHECK_PORT=$ql_grpc_port"
       append_stack_line "$file" "HEALTH_URL=http://127.0.0.1:$ql_port/api/health"

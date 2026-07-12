@@ -77,6 +77,15 @@ grep -Fx 'CHECK_PORT=5900' "$STACK_DIR/qinglong.conf"
 grep -Fx 'CHECK_PORT=5501' "$STACK_DIR/qinglong.conf"
 grep -Fx 'HEALTH_URL=http://127.0.0.1:5900/api/health' "$STACK_DIR/qinglong.conf"
 
+sed -i 's/ENV=QlPort=5900/ENV=QlPort=5901/' "$STACK_DIR/qinglong.conf"
+migrate_stack qinglong
+grep -Fx 'CHECK_PORT=5901' "$STACK_DIR/qinglong.conf"
+grep -Fx 'HEALTH_URL=http://127.0.0.1:5901/api/health' "$STACK_DIR/qinglong.conf"
+if grep -Fx 'CHECK_PORT=5900' "$STACK_DIR/qinglong.conf"; then
+  echo '青龙端口变化后不应保留旧检查端口' >&2
+  exit 1
+fi
+
 # 生命周期：必须等待旧进程退出，并验证端口、卷和 HTTP 健康后才成功。
 running=1
 run_failed=0
