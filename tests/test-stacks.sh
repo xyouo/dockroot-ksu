@@ -14,6 +14,8 @@ DATA_ROOT="$STATE_DIR/data"
 AUTOSTART_FILE="$STATE_DIR/autostart.list"
 mkdir -p "$STACK_DIR" "$DATA_ROOT/openlist/rootfs"
 : > "$AUTOSTART_FILE"
+ensure_state() { mkdir -p "$STACK_DIR" "$DATA_ROOT"; }
+load_config() { :; }
 
 cat > "$STACK_DIR/openlist.conf" <<EOF
 IMAGE=openlistteam/openlist:latest-aio
@@ -41,7 +43,6 @@ apply_stack openlist
 grep -F 'pull_image <openlistteam/openlist:latest-aio> <openlist>' "$calls"
 
 mkdir -p "$DATA_ROOT/incomplete"
-touch "$RUNTIME_DIR/old.download.123" 2>/dev/null || true
 cleanup_state > "$temp_dir/preview"
 test -d "$DATA_ROOT/incomplete"
 grep -F "$DATA_ROOT/incomplete" "$temp_dir/preview"

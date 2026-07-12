@@ -11,6 +11,7 @@
 - 拉取、运行、停止和查看容器。
 - 查看 ruri 原始运行日志。
 - 配置容器开机自启。
+- 使用 Compose Lite 配置文件声明镜像、卷、环境变量和自启策略。
 - 输出架构、SELinux、文件系统和挂载环境诊断。
 - 通过独立 mount namespace 为 DockRoot 提供 DNS，不修改 Android 全局网络配置。
 - 卸载模块时保留容器数据，防止误删。
@@ -53,14 +54,96 @@ su -c '/data/adb/modules/dockroot_ksu/bin/drctl autostart add alpine'
 su -c '/data/adb/modules/dockroot_ksu/bin/drctl autostart list'
 ```
 
+## Compose Lite 固定配置
+
+每个容器使用一个容易备份和编辑的配置文件：
+
+```text
+/data/adb/dockroot/stacks/<容器名>.conf
+```
+
+支持以下字段：
+
+- `IMAGE=`：镜像名称，必填。
+- `AUTOSTART=0|1`：是否随手机开机启动。
+- `VOLUME=宿主绝对路径:容器绝对路径[:ro]`：可以重复填写。
+- `ENV=KEY=VALUE`：可以重复填写。
+- `HOSTNAME=`：可选容器主机名。
+- `WORKDIR=`：可选容器工作目录，必须是绝对路径。
+
+DockRoot 只有 host 网络，因此不支持 Compose 的 `ports`、独立网络、`depends_on` 等字段。镜像监听的端口会直接占用手机端口。
+
+常用命令：
+
+```sh
+drctl stack list
+drctl stack path
+drctl apply openlist
+drctl up openlist
+drctl down openlist
+drctl restart openlist
+drctl logs openlist 100
+```
+
+`apply` 只拉取缺失镜像并更新固定配置，不会启动长期服务。`up` 会应用配置后后台启动。修改 `.conf` 后再次执行 `drctl up <容器名>` 即可生效。
+
+### OpenList 完整版示例
+
+创建内置模板：
+
+```sh
+su -c 'drctl stack create openlist'
+su -c 'drctl up openlist'
+```
+
+生成的 `/data/adb/dockroot/stacks/openlist.conf` 内容为：
+
+```ini
+IMAGE=openlistteam/openlist:latest-aio
+AUTOSTART=1
+VOLUME=/data/adb/dockroot/volumes/openlist:/opt/openlist/data
+ENV=UMASK=022
+```
+
+这里使用 OpenList 官方 `latest-aio` 镜像，包含 FFmpeg 和 aria2。OpenList 使用 host 网络，默认面板地址为 `http://127.0.0.1:5244`。业务配置和数据库保存在 `/data/adb/dockroot/volumes/openlist`，重新拉取镜像不会删除它们。
+
 ## 数据与配置
 
 - 配置：`/data/adb/dockroot/config.env`
 - 镜像和容器：`/data/adb/dockroot/data`
+- Compose Lite 配置：`/data/adb/dockroot/stacks`
+- 持久化业务数据：`/data/adb/dockroot/volumes`
 - 自启列表：`/data/adb/dockroot/autostart.list`
 - 模块日志：`/data/adb/dockroot/logs/service.log`
 
 不要把容器 rootfs 放到 `/sdcard`。Android 共享存储不能正确保存 Linux 权限和符号链接。建议使用 `/data`，或者已正确挂载的 Ext4 外置存储。
+
+## 清理旧文件
+
+先预览模块能够安全识别的残留：
+
+```sh
+su -c 'drctl cleanup'
+```
+
+确认列表后删除：
+
+```sh
+su -c 'drctl cleanup --yes'
+```
+
+该命令只删除两类内容：
+
+- `/data/adb/dockroot/data` 中没有 `rootfs` 的失败拉取目录，例如之前失败产生的 `alpine2`。
+- `/data/adb/dockroot/bin` 中遗留的 `.download.*` 下载残片。
+
+以下目录仍在使用，不应作为旧版本垃圾删除：
+
+- `/data/adb/dockroot/bin`：DockRoot 和 ruri 运行环境。
+- `/data/adb/dockroot/dns-etc`、`cacerts`：Android DNS 与 HTTPS 兼容环境。
+- `/data/adb/dockroot/data/<容器名>`：已拉取的容器 rootfs。
+- `/data/adb/dockroot/stacks`：固定配置。
+- `/data/adb/dockroot/volumes`：容器业务数据。
 
 ## 重要限制
 

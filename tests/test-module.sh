@@ -8,6 +8,7 @@ required=(
   module/service.sh
   module/bin/drctl
   module/bin/dockroot-exec
+  module/examples/openlist-aio.conf
   module/system/bin/drctl
   scripts/package.sh
   README.md

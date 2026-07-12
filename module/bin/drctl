@@ -9,6 +9,8 @@ RUNTIME_DIR="$STATE_DIR/bin"
 LOG_DIR="$STATE_DIR/logs"
 CONFIG_FILE="$STATE_DIR/config.env"
 AUTOSTART_FILE="$STATE_DIR/autostart.list"
+STACK_DIR="$STATE_DIR/stacks"
+VOLUME_DIR="$STATE_DIR/volumes"
 DNS_ETC_DIR="$STATE_DIR/dns-etc"
 DOCKROOT="$RUNTIME_DIR/DockRoot"
 RURI="$RUNTIME_DIR/ruri"
@@ -21,10 +23,11 @@ msg() { printf '[DockRoot 模块] %s\n' "$*"; }
 err() { printf '[DockRoot 模块] 错误：%s\n' "$*" >&2; }
 
 ensure_state() {
-  mkdir -p "$RUNTIME_DIR" "$STATE_DIR/data" "$LOG_DIR" 2>/dev/null || return 1
+  mkdir -p "$RUNTIME_DIR" "$STATE_DIR/data" "$LOG_DIR" "$STACK_DIR" "$VOLUME_DIR" 2>/dev/null || return 1
   [ -f "$CONFIG_FILE" ] || cp "$MODDIR/config.env" "$CONFIG_FILE"
   [ -f "$AUTOSTART_FILE" ] || : > "$AUTOSTART_FILE"
-  chmod 0700 "$STATE_DIR" "$RUNTIME_DIR" "$STATE_DIR/data" "$LOG_DIR" 2>/dev/null || true
+  chmod 0700 "$STATE_DIR" "$RUNTIME_DIR" "$STATE_DIR/data" "$LOG_DIR" "$STACK_DIR" 2>/dev/null || true
+  chmod 0755 "$VOLUME_DIR" 2>/dev/null || true
   chmod 0600 "$CONFIG_FILE" "$AUTOSTART_FILE" 2>/dev/null || true
 }
 
@@ -208,6 +211,139 @@ cleanup_incomplete_destination() {
   fi
 }
 
+stack_file() {
+  printf '%s/%s.conf\n' "$STACK_DIR" "$1"
+}
+
+apply_stack() {
+  name=${1:-}
+  valid_name "$name" || { err '请提供有效配置名'; return 1; }
+  ensure_state || return 1
+  load_config
+  file="$(stack_file "$name")"
+  [ -r "$file" ] || { err "配置不存在：$file"; return 1; }
+
+  stack_image=
+  stack_autostart=0
+  set -- run --renew
+  while IFS='=' read -r key value; do
+    key="$(printf '%s' "$key" | tr -d '\r')"
+    value="$(printf '%s' "$value" | tr -d '\r')"
+    case "$key" in
+      ''|'#'*) continue ;;
+      IMAGE) stack_image=$value ;;
+      AUTOSTART)
+        case "$value" in 0|1) stack_autostart=$value ;; *) err 'AUTOSTART 只能是 0 或 1'; return 1 ;; esac
+        ;;
+      VOLUME)
+        source_path=${value%%:*}
+        remainder=${value#*:}
+        target_path=${remainder%%:*}
+        case "$source_path" in /*) ;; *) err "卷来源必须是绝对路径：$value"; return 1 ;; esac
+        case "$target_path" in /*) ;; *) err "卷目标必须是绝对路径：$value"; return 1 ;; esac
+        mkdir -p "$source_path" || return 1
+        chmod 0775 "$source_path" 2>/dev/null || true
+        set -- "$@" -v "$value"
+        ;;
+      ENV)
+        case "$value" in *=*) set -- "$@" -e "$value" ;; *) err "环境变量格式应为 KEY=VALUE：$value"; return 1 ;; esac
+        ;;
+      HOSTNAME) [ -n "$value" ] && set -- "$@" --hostname "$value" ;;
+      WORKDIR) case "$value" in /*) set -- "$@" -w "$value" ;; *) err 'WORKDIR 必须是绝对路径'; return 1 ;; esac ;;
+      *) err "不支持的配置项：$key"; return 1 ;;
+    esac
+  done < "$file"
+
+  [ -n "$stack_image" ] || { err "配置缺少 IMAGE：$file"; return 1; }
+  if [ ! -d "$DATA_ROOT/$name/rootfs" ]; then
+    pull_image "$stack_image" "$name" || return 1
+  fi
+
+  # 仅更新 ruri.conf；用 true 覆盖本次命令，避免 apply 启动长期服务。
+  set -- "$@" "$name" /bin/sh -c true
+  run_dockroot "$@" || return 1
+  if [ "$stack_autostart" = 1 ]; then
+    autostart_add "$name" >/dev/null
+  else
+    autostart_remove "$name" >/dev/null
+  fi
+  msg "配置已应用：$file"
+}
+
+up_stack() {
+  name=${1:-}
+  apply_stack "$name" || return 1
+  run_dockroot stop "$name" >/dev/null 2>&1 || true
+  run_dockroot run -d "$name"
+  msg "容器已启动：$name"
+}
+
+down_stack() {
+  name=${1:-}
+  valid_name "$name" || { err '请提供有效配置名'; return 1; }
+  require_runtime || return 1
+  run_dockroot stop "$name"
+}
+
+create_stack() {
+  template=${1:-}
+  ensure_state || return 1
+  case "$template" in
+    openlist)
+      target="$STACK_DIR/openlist.conf"
+      source="$MODDIR/examples/openlist-aio.conf"
+      ;;
+    *) err '当前内置模板：openlist'; return 1 ;;
+  esac
+  [ ! -e "$target" ] || { err "配置已存在，不会覆盖：$target"; return 1; }
+  cp "$source" "$target" || return 1
+  chmod 0600 "$target"
+  msg "已创建配置：$target"
+}
+
+list_stacks() {
+  ensure_state || return 1
+  found=0
+  for file in "$STACK_DIR"/*.conf; do
+    [ -f "$file" ] || continue
+    basename "$file" .conf
+    found=1
+  done
+  [ "$found" = 1 ] || msg "暂无配置，目录：$STACK_DIR"
+}
+
+cleanup_state() {
+  mode=${1:-preview}
+  load_config
+  found=0
+  for path in "$DATA_ROOT"/*; do
+    [ -d "$path" ] || continue
+    [ ! -d "$path/rootfs" ] || continue
+    found=1
+    if [ "$mode" = --yes ]; then
+      rm -rf "$path"
+      msg "已删除不完整目录：$path"
+    else
+      msg "可清理不完整目录：$path"
+    fi
+  done
+  for path in "$RUNTIME_DIR"/*.download.*; do
+    [ -f "$path" ] || continue
+    found=1
+    if [ "$mode" = --yes ]; then
+      rm -f "$path"
+      msg "已删除下载残片：$path"
+    else
+      msg "可清理下载残片：$path"
+    fi
+  done
+  if [ "$found" = 0 ]; then
+    msg '没有发现可安全清理的旧文件'
+  elif [ "$mode" != --yes ]; then
+    msg "以上仅为预览；确认后执行：$0 cleanup --yes"
+  fi
+}
+
 pull_image() {
   image=${1:-}
   name=${2:-}
@@ -304,6 +440,13 @@ DockRoot 容器模块（实验性）
   autostart add <容器名>           加入开机自启
   autostart remove <容器名>        移除开机自启
   autostart list                  查看开机自启列表
+  stack create openlist           创建完整版 OpenList 配置模板
+  stack list                      查看声明式配置
+  apply <配置名>                  应用固定配置但不启动
+  up <配置名>                     应用配置并后台启动
+  down <配置名>                   停止配置对应的容器
+  restart <配置名>                重新应用配置并启动
+  cleanup [--yes]                 预览/清理失败拉取残留
 
 注意：DockRoot 只支持 host 网络，不支持 -p 端口映射。
 EOF
@@ -317,6 +460,21 @@ main() {
     install-runtime) install_runtime ;;
     doctor) doctor ;;
     boot) boot ;;
+    apply) apply_stack "${1:-}" ;;
+    up) up_stack "${1:-}" ;;
+    down) down_stack "${1:-}" ;;
+    restart) down_stack "${1:-}" >/dev/null 2>&1 || true; up_stack "${1:-}" ;;
+    cleanup) cleanup_state "${1:-preview}" ;;
+    stack)
+      sub=${1:-list}
+      [ $# -eq 0 ] || shift
+      case "$sub" in
+        create) create_stack "${1:-}" ;;
+        list) list_stacks ;;
+        path) ensure_state; printf '%s\n' "$STACK_DIR" ;;
+        *) err '可用子命令：create、list、path'; return 1 ;;
+      esac
+      ;;
     pull) pull_image "$@" ;;
     run|stop|ps|rm|inspect|layers|tags)
       require_runtime || return 1
