@@ -12,6 +12,7 @@ STATE_DIR="$temp_dir/state"
 STACK_DIR="$STATE_DIR/stacks"
 DATA_ROOT="$STATE_DIR/data"
 RUNTIME_DIR="$STATE_DIR/bin"
+MODDIR=module
 AUTOSTART_FILE="$STATE_DIR/autostart.list"
 mkdir -p "$STACK_DIR" "$RUNTIME_DIR" "$DATA_ROOT/openlist/rootfs"
 : > "$AUTOSTART_FILE"
@@ -59,3 +60,10 @@ if cleanup_state --yes >/dev/null 2>&1; then
   echo '危险 DATA_ROOT 不应允许清理' >&2
   exit 1
 fi
+
+rm -f "$STACK_DIR/qinglong.conf"
+create_stack qinglong 5900
+grep -Fx 'IMAGE=whyour/qinglong:latest' "$STACK_DIR/qinglong.conf"
+grep -Fx 'VOLUME=/data/adb/dockroot/volumes/qinglong:/ql/data' "$STACK_DIR/qinglong.conf"
+grep -Fx 'ENV=QlPort=5900' "$STACK_DIR/qinglong.conf"
+grep -Fx 'AUTOSTART=1' "$STACK_DIR/qinglong.conf"

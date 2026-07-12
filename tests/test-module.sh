@@ -9,6 +9,7 @@ required=(
   module/bin/drctl
   module/bin/dockroot-exec
   module/examples/openlist.conf
+  module/examples/qinglong.conf
   module/system/bin/drctl
   scripts/package.sh
   README.md
