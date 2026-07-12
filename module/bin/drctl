@@ -1,0 +1,252 @@
+#!/system/bin/sh
+
+set -u
+
+MODDIR=${0%/*}
+MODDIR=${MODDIR%/*}
+STATE_DIR=/data/adb/dockroot
+RUNTIME_DIR="$STATE_DIR/bin"
+LOG_DIR="$STATE_DIR/logs"
+CONFIG_FILE="$STATE_DIR/config.env"
+AUTOSTART_FILE="$STATE_DIR/autostart.list"
+DOCKROOT="$RUNTIME_DIR/DockRoot"
+RURI="$RUNTIME_DIR/ruri"
+DOCKROOT_URL=https://fw.koolcenter.com/binary/DockRoot/DockRoot.arm64
+RURI_URL=https://fw.koolcenter.com/binary/DockRoot/ruri.arm64
+DOCKROOT_SHA256=42b23398d9cf8838ca55084becb1aaee438e91e38d7f1696346663efbe0a9e14
+RURI_SHA256=fab3929b1c34a7d066454617712b93aa2f1e8321cde0c155b5080008f19dbcf7
+
+msg() { printf '[DockRoot 模块] %s\n' "$*"; }
+err() { printf '[DockRoot 模块] 错误：%s\n' "$*" >&2; }
+
+ensure_state() {
+  mkdir -p "$RUNTIME_DIR" "$STATE_DIR/data" "$LOG_DIR" 2>/dev/null || return 1
+  [ -f "$CONFIG_FILE" ] || cp "$MODDIR/config.env" "$CONFIG_FILE"
+  [ -f "$AUTOSTART_FILE" ] || : > "$AUTOSTART_FILE"
+  chmod 0700 "$STATE_DIR" "$RUNTIME_DIR" "$STATE_DIR/data" "$LOG_DIR" 2>/dev/null || true
+  chmod 0600 "$CONFIG_FILE" "$AUTOSTART_FILE" 2>/dev/null || true
+}
+
+load_config() {
+  AUTO_START=1
+  BOOT_WAIT=120
+  DATA_ROOT="$STATE_DIR/data"
+  if [ -r "$CONFIG_FILE" ]; then
+    # 仅接受已知键，避免直接执行配置文件内容。
+    while IFS='=' read -r key value; do
+      case "$key" in
+        AUTO_START) case "$value" in 0|1) AUTO_START=$value;; esac ;;
+        BOOT_WAIT) case "$value" in ''|*[!0-9]*) ;; *) BOOT_WAIT=$value;; esac ;;
+        DATA_ROOT) case "$value" in /*) DATA_ROOT=$value;; esac ;;
+      esac
+    done < "$CONFIG_FILE"
+  fi
+}
+
+have_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+sha256_file() {
+  if have_cmd sha256sum; then
+    sha256sum "$1" | awk '{print $1}'
+  elif have_cmd toybox; then
+    toybox sha256sum "$1" | awk '{print $1}'
+  else
+    return 1
+  fi
+}
+
+download() {
+  url=$1
+  output=$2
+  if have_cmd curl; then
+    curl -fL --connect-timeout 15 --retry 2 -o "$output" "$url"
+  elif have_cmd wget; then
+    wget -O "$output" "$url"
+  elif have_cmd busybox; then
+    busybox wget -O "$output" "$url"
+  else
+    err '找不到 curl、wget 或 busybox wget'
+    return 1
+  fi
+}
+
+install_one() {
+  name=$1
+  url=$2
+  expected=$3
+  target=$4
+  temp="$target.download.$$"
+  rm -f "$temp"
+  msg "正在下载 $name"
+  if ! download "$url" "$temp"; then
+    rm -f "$temp"
+    return 1
+  fi
+  actual="$(sha256_file "$temp")" || {
+    rm -f "$temp"
+    err '设备缺少 SHA-256 校验工具'
+    return 1
+  }
+  if [ "$actual" != "$expected" ]; then
+    rm -f "$temp"
+    err "$name 校验失败；上游文件可能已更新，模块不会运行未知文件"
+    return 1
+  fi
+  chmod 0755 "$temp" && mv -f "$temp" "$target"
+}
+
+runtime_ready() {
+  [ -x "$DOCKROOT" ] && [ -x "$RURI" ]
+}
+
+install_runtime() {
+  ensure_state || return 1
+  install_one DockRoot "$DOCKROOT_URL" "$DOCKROOT_SHA256" "$DOCKROOT" || return 1
+  install_one ruri "$RURI_URL" "$RURI_SHA256" "$RURI" || return 1
+  msg '运行环境安装完成'
+  "$RURI" -v 2>&1 | head -n 1 || true
+}
+
+sync_dockroot_config() {
+  load_config
+  mkdir -p "$DATA_ROOT" || return 1
+  config="$RUNTIME_DIR/dockroot.json"
+  if [ ! -f "$config" ]; then
+    escaped="$(printf '%s' "$DATA_ROOT" | sed 's/[\\"]/\\&/g')"
+    printf '{\n  "registry-mirrors": [],\n  "data-root": "%s",\n  "useKspeeder": false\n}\n' "$escaped" > "$config"
+    chmod 0600 "$config"
+  fi
+}
+
+require_runtime() {
+  if ! runtime_ready; then
+    err "运行环境尚未安装，请先执行：$0 install-runtime"
+    return 1
+  fi
+  sync_dockroot_config
+}
+
+valid_name() {
+  case "$1" in
+    ''|*[!a-zA-Z0-9._-]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+autostart_add() {
+  name=${1:-}
+  valid_name "$name" || { err '容器名只能包含字母、数字、点、下划线和短横线'; return 1; }
+  ensure_state || return 1
+  grep -Fx "$name" "$AUTOSTART_FILE" >/dev/null 2>&1 || printf '%s\n' "$name" >> "$AUTOSTART_FILE"
+  msg "已加入开机自启：$name"
+}
+
+autostart_remove() {
+  name=${1:-}
+  valid_name "$name" || { err '容器名无效'; return 1; }
+  temp="$AUTOSTART_FILE.tmp.$$"
+  grep -Fvx "$name" "$AUTOSTART_FILE" > "$temp" 2>/dev/null || true
+  mv -f "$temp" "$AUTOSTART_FILE"
+  chmod 0600 "$AUTOSTART_FILE"
+  msg "已移除开机自启：$name"
+}
+
+autostart_list() {
+  ensure_state || return 1
+  sed '/^[[:space:]]*$/d' "$AUTOSTART_FILE"
+}
+
+boot() {
+  ensure_state || exit 1
+  load_config
+  [ "$AUTO_START" = 1 ] || exit 0
+  waited=0
+  while [ "$(getprop sys.boot_completed 2>/dev/null)" != 1 ] && [ "$waited" -lt "$BOOT_WAIT" ]; do
+    sleep 2
+    waited=$((waited + 2))
+  done
+  require_runtime || exit 0
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    valid_name "$name" || continue
+    msg "正在自启容器：$name" >> "$LOG_DIR/service.log"
+    "$DOCKROOT" run -d "$name" >> "$LOG_DIR/service.log" 2>&1 || \
+      msg "容器自启失败：$name" >> "$LOG_DIR/service.log"
+  done < "$AUTOSTART_FILE"
+}
+
+doctor() {
+  ensure_state || return 1
+  load_config
+  printf 'architecture=%s\n' "$(uname -m 2>/dev/null)"
+  printf 'selinux=%s\n' "$(getenforce 2>/dev/null || echo unknown)"
+  printf 'runtime=%s\n' "$(runtime_ready && echo installed || echo missing)"
+  printf 'data_root=%s\n' "$DATA_ROOT"
+  if [ -e "$DATA_ROOT" ]; then
+    printf 'filesystem=%s\n' "$(df -T "$DATA_ROOT" 2>/dev/null | awk 'NR==2 {print $2}')"
+  else
+    printf 'filesystem=missing\n'
+  fi
+  printf 'autostart=%s\n' "$AUTO_START"
+  printf 'boot_completed=%s\n' "$(getprop sys.boot_completed 2>/dev/null)"
+  [ -e /proc ] && echo 'proc=yes' || echo 'proc=no'
+  [ -e /sys ] && echo 'sys=yes' || echo 'sys=no'
+  [ -e /dev ] && echo 'dev=yes' || echo 'dev=no'
+}
+
+usage() {
+  cat <<'EOF'
+DockRoot 容器模块（实验性）
+
+用法：drctl <命令> [参数]
+
+  install-runtime                 下载并校验 DockRoot/ruri
+  doctor                          输出兼容性诊断
+  pull <镜像:标签> <容器名>       拉取镜像
+  run [-d] <容器名> [命令...]     运行或进入容器
+  stop <容器名>                   停止容器
+  ps [容器名]                     查看运行状态
+  logs <容器名> [行数]            查看容器日志
+  autostart add <容器名>           加入开机自启
+  autostart remove <容器名>        移除开机自启
+  autostart list                  查看开机自启列表
+
+注意：DockRoot 只支持 host 网络，不支持 -p 端口映射。
+EOF
+}
+
+main() {
+  command=${1:-help}
+  [ $# -eq 0 ] || shift
+  case "$command" in
+    help|-h|--help) usage ;;
+    install-runtime) install_runtime ;;
+    doctor) doctor ;;
+    boot) boot ;;
+    pull|run|stop|ps|rm|inspect|layers|tags)
+      require_runtime || return 1
+      "$DOCKROOT" "$command" "$@"
+      ;;
+    logs)
+      name=${1:-}
+      lines=${2:-100}
+      valid_name "$name" || { err '请提供有效容器名'; return 1; }
+      case "$lines" in ''|*[!0-9]*) err '日志行数必须是数字'; return 1;; esac
+      load_config
+      tail -n "$lines" "$DATA_ROOT/$name/ruri.log"
+      ;;
+    autostart)
+      sub=${1:-list}
+      [ $# -eq 0 ] || shift
+      case "$sub" in
+        add) autostart_add "${1:-}" ;;
+        remove|rm) autostart_remove "${1:-}" ;;
+        list) autostart_list ;;
+        *) err '可用子命令：add、remove、list'; return 1 ;;
+      esac
+      ;;
+    *) err "未知命令：$command"; usage >&2; return 1 ;;
+  esac
+}
+
+main "$@"

@@ -1,0 +1,4 @@
+#!/system/bin/sh
+
+exec /data/adb/modules/dockroot_ksu/bin/drctl "$@"
+

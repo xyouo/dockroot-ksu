@@ -1,0 +1,79 @@
+name: 检查与构建模块
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 模块版本（不含 v）
+        required: false
+        default: 0.1.0
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: ShellCheck
+        run: |
+          shellcheck -s sh module/customize.sh module/service.sh module/uninstall.sh
+          shellcheck -s sh module/bin/drctl module/system/bin/drctl
+          shellcheck -s bash scripts/package.sh tests/test-module.sh
+
+      - name: 运行测试
+        run: bash tests/test-module.sh
+
+      - name: 解析版本
+        id: version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="${{ inputs.version || '0.1.0' }}"
+          fi
+          IFS=. read -r major minor patch <<< "$version"
+          code=$((major * 10000 + minor * 100 + patch))
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
+      - name: 构建模块 ZIP
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          VERSION_CODE: ${{ steps.version.outputs.code }}
+        run: bash scripts/package.sh
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: dockroot-ksu-v${{ steps.version.outputs.version }}
+          path: dist/*.zip
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 下载模块 ZIP
+        uses: actions/download-artifact@v4
+        with:
+          name: dockroot-ksu-v${{ needs.build.outputs.version }}
+          path: dist
+
+      - name: 发布 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          generate_release_notes: true
