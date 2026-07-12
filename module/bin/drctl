@@ -301,16 +301,30 @@ down_stack() {
 
 create_stack() {
   template=${1:-}
+  option=${2:-}
   ensure_state || return 1
   case "$template" in
     openlist)
       target="$STACK_DIR/openlist.conf"
       source="$MODDIR/examples/openlist.conf"
       ;;
-    *) err '当前内置模板：openlist'; return 1 ;;
+    qinglong)
+      target="$STACK_DIR/qinglong.conf"
+      source="$MODDIR/examples/qinglong.conf"
+      port=${option:-5700}
+      case "$port" in ''|*[!0-9]*) err '青龙端口必须是 1-65535 的数字'; return 1 ;; esac
+      if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+        err '青龙端口必须在 1-65535 之间'
+        return 1
+      fi
+      ;;
+    *) err '当前内置模板：openlist、qinglong'; return 1 ;;
   esac
   [ ! -e "$target" ] || { err "配置已存在，不会覆盖：$target"; return 1; }
   cp "$source" "$target" || return 1
+  if [ "$template" = qinglong ]; then
+    sed -i "s|__QL_PORT__|$port|g" "$target"
+  fi
   chmod 0600 "$target"
   msg "已创建配置：$target"
 }
@@ -466,7 +480,8 @@ DockRoot 容器模块（实验性）
   autostart add <容器名>           加入开机自启
   autostart remove <容器名>        移除开机自启
   autostart list                  查看开机自启列表
-  stack create openlist           创建完整版 OpenList 配置模板
+  stack create openlist           创建标准完整版 OpenList 配置模板
+  stack create qinglong [端口]    创建青龙配置模板，默认端口 5700
   stack list                      查看声明式配置
   apply <配置名>                  应用固定配置但不启动
   up <配置名>                     应用配置并后台启动
@@ -495,7 +510,7 @@ main() {
       sub=${1:-list}
       [ $# -eq 0 ] || shift
       case "$sub" in
-        create) create_stack "${1:-}" ;;
+        create) create_stack "${1:-}" "${2:-}" ;;
         list) list_stacks ;;
         path) ensure_state; printf '%s\n' "$STACK_DIR" ;;
         *) err '可用子命令：create、list、path'; return 1 ;;
