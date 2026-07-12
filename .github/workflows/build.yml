@@ -22,7 +22,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: ShellCheck
         run: |
@@ -54,7 +54,7 @@ jobs:
         run: bash scripts/package.sh
 
       - name: 上传构建产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dockroot-ksu-v${{ steps.version.outputs.version }}
           path: dist/*.zip
@@ -67,13 +67,13 @@ jobs:
       contents: write
     steps:
       - name: 下载模块 ZIP
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dockroot-ksu-v${{ needs.build.outputs.version }}
           path: dist
 
       - name: 发布 Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/*.zip
           generate_release_notes: true
