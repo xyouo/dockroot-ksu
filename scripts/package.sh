@@ -2,10 +2,10 @@
 
 set -euo pipefail
 
-version="${VERSION:-0.1.0}"
-version_code="${VERSION_CODE:-100}"
+version="${VERSION:-0.3.1}"
+version_code="${VERSION_CODE:-301}"
 module_dir=build/module
-output="dist/dockroot-ksu-v${version}.zip"
+output="dist/dockroot-v${version}.zip"
 
 rm -rf "$module_dir"
 mkdir -p "$module_dir" dist
@@ -23,4 +23,3 @@ sed -i \
 )
 
 echo "$output"
-

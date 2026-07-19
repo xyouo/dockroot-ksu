@@ -10,7 +10,7 @@ on:
       version:
         description: 模块版本（不含 v）
         required: false
-        default: 0.3.0
+        default: 0.3.1
 
 permissions:
   contents: read
@@ -40,7 +40,7 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             version="${GITHUB_REF_NAME#v}"
           else
-            version="${{ inputs.version || '0.1.0' }}"
+            version="${{ inputs.version || '0.3.1' }}"
           fi
           IFS=. read -r major minor patch <<< "$version"
           code=$((major * 10000 + minor * 100 + patch))
@@ -56,7 +56,7 @@ jobs:
       - name: 上传构建产物
         uses: actions/upload-artifact@v7
         with:
-          name: dockroot-ksu-v${{ steps.version.outputs.version }}
+          name: dockroot-v${{ steps.version.outputs.version }}
           path: dist/*.zip
 
   release:
@@ -69,7 +69,7 @@ jobs:
       - name: 下载模块 ZIP
         uses: actions/download-artifact@v8
         with:
-          name: dockroot-ksu-v${{ needs.build.outputs.version }}
+          name: dockroot-v${{ needs.build.outputs.version }}
           path: dist
 
       - name: 发布 Release
